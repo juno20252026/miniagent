@@ -1,0 +1,55 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# ===== 虚拟环境 =====
+venv/
+env/
+.venv/
+ENV/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.iml
+
+# ===== 运行时生成（敏感！） =====
+ai_config.json
+mail_config.json
+agent_memory.db
+agent_memory.db-journal
+memories.json
+short_term_memory.json
+current_plan.txt
+heartbeat.txt
+agent.pid
+old_pid.txt
+LOGS/
+MISSION/
+extensions/
+knowledge_base/
+Dworkspace/
+keys/
+sandbox_temp/
+*.log
+
+# ===== 打包输出 =====
+dist/
+build/
+*.exe
+*.zip
+*.tar.gz
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
