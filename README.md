@@ -24,7 +24,7 @@
 ### 1️⃣ 下载源码
 
 ```bash
-git clone https://github.com/你的用户名/miniagent.git
+git clone https://github.com/juno20252026/miniagent.git
 cd miniagent
 ```
 
