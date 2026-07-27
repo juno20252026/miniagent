@@ -1142,24 +1142,12 @@ weight 取值 1-10，按重要性评分：
 """
             messages.append({"role": "system", "content": plan_injection})
         
-        
-                
-        memory_summary = self.get_memory_summary()
-        if memory_summary:
-            messages.append({"role": "system", "content": memory_summary})
-        
         # ===== 新增：注入操作日志 =====
         if self.act_log and len(self.act_log) > 0:
             log_lines = ["", "## 最近的操作记录（参考用，勿重复执行）:", ""]
             for entry in self.act_log:
                 log_lines.append(f"- {entry}")
             messages.append({"role": "system", "content": "\n".join(log_lines)})
-            
-        # ===== 注入 MEMORY 变量 =====
-        if hasattr(self, 'kb_interface'):
-            var_content = self.kb_interface.manager.memory.get_injection_content()
-            if var_content:
-                messages.append({"role": "system", "content": var_content})
         
         # ===== 注入扩展列表（自动） =====
         if hasattr(self, 'ext_manager') and self.ext_manager:
@@ -1200,7 +1188,7 @@ weight 取值 1-10，按重要性评分：
                     if formatted:
                         messages.append({"role": "system", "content": formatted})
                         self.process_callback(f"[语义检索] 注入了 {results['total']} 条相关记录")
-                        self._retrieval_done = True  
+                        # self._retrieval_done = True  
             except Exception as e:
                 self.process_callback(f"[语义检索] 检索失败: {e}")
         

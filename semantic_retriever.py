@@ -586,18 +586,88 @@ class SemanticRetriever:
         # 按相似度降序排序
         results.sort(key=lambda x: x['similarity'], reverse=True)
         return results[:top_k]
+
+    def retrieve_memories(self, query: str, top_k: int = RETRIEVAL_TOP_K,
+                          min_similarity: float = MIN_SIMILARITY) -> List[Dict]:
+        """从常驻记忆文件中检索相关内容（带去重）"""
+        if not query or len(query.strip()) < 2:
+            return []
+        
+        memory_file = Path("./memories.json")
+        if not memory_file.exists():
+            return []
+        
+        try:
+            with open(memory_file, 'r', encoding='utf-8') as f:
+                memories = json.load(f)
+        except:
+            return []
+        
+        if not memories:
+            return []
+        
+        query_vec = self._cached_encode(query)
+        if query_vec is None:
+            return []
+        
+        results = []
+        for item in memories:
+            content = item.get('value', '')
+            if not content:
+                continue
+            
+            vec = self._cached_encode(content)
+            if vec is None:
+                continue
+            
+            similarity = self._cosine_similarity(query_vec, vec)
+            if similarity >= min_similarity:
+                weight = item.get('weight', 5)  # 默认权重 5
+                results.append({
+                    'id': item.get('id'),
+                    'value': content,
+                    'similarity': round(similarity, 4),
+                    'weight': weight,
+                    'score': round(similarity * (weight / 5), 4),  # ← 加权分数
+                    'source': 'memory'
+                })
+        
+        # 按加权分数排序
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        # ===== 去重：删除语义高度相似的内容 =====
+        deduped = []
+        for r in results:
+            # 检查是否与已有结果高度相似（相似度 > 0.9）
+            is_duplicate = False
+            for existing in deduped:
+                # 计算两条记忆之间的相似度
+                existing_vec = self._cached_encode(existing['value'])
+                if existing_vec is not None:
+                    dup_sim = self._cosine_similarity(
+                        self._cached_encode(r['value']),
+                        existing_vec
+                    )
+                    if dup_sim is not None and dup_sim > 0.85:
+                        is_duplicate = True
+                        break
+            if not is_duplicate:
+                deduped.append(r)
+        
+        return deduped[:top_k]
     
     def retrieve_combined(self, query: str, top_k: int = RETRIEVAL_TOP_K,
                           min_similarity: float = MIN_SIMILARITY) -> Dict:
         """同时从会话和知识库检索"""
         conv_results = self.retrieve_conversations(query, top_k, min_similarity)
         know_results = self.retrieve_knowledge(query, top_k, min_similarity)
-        
+        mem_results = self.retrieve_memories(query, top_k, min_similarity)
         return {
             'query': query,
             'conversations': conv_results,
             'knowledge': know_results,
-            'total': len(conv_results) + len(know_results),
+            'memories': mem_results,  
+            'total': len(conv_results) + len(know_results)+ len(mem_results),
             'timestamp': datetime.now().isoformat()
         }
     
@@ -611,6 +681,13 @@ class SemanticRetriever:
             return ""
         
         parts = []
+        # 记忆（放在最前面）
+        if results.get('memories'):  
+            parts.append("\n## 相关常驻记忆") 
+            for i, r in enumerate(results['memories'], 1):
+                content = r.get('value', '')
+                parts.append(f"{i}. {content}")
+            parts.append("") 
         
         # 会话历史
         if results.get('conversations'):
