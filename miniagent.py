@@ -1155,7 +1155,7 @@ weight 取值 1-10，按重要性评分：
             self._is_user_loop = False
 
     def _process_response(self, response: str, retry_count: int = 0) -> str:
-        """处理AI响应，支持多种格式 - 统一执行所有块，一次性返回"""
+        """处理AI响应 - 执行所有指令，遇到错误中断，最后统一返回AI"""
         response = self._process_memory_block(response)
         response = self._handle_plan_block(response)
         response = self._process_comodle_block(response)
@@ -1163,131 +1163,134 @@ weight 取值 1-10，按重要性评分：
         cleaned_response, instructions = self._process_json_block(response)
         has_python = '[PYTHON]' in cleaned_response and '[/PYTHON]' in cleaned_response
         
-        if instructions or has_python:
-            results = []
-            has_error = False
-            error_msg = ""
-            failed_action = ""
-            failed_input = ""
-            executed_count = 0
+        # 没有指令，直接返回
+        if not instructions and not has_python:
+            self.db.add_message("assistant", cleaned_response)
+            return cleaned_response
+        
+        results = []
+        has_error = False
+        error_msg = ""
+        failed_action = ""
+        failed_input = ""
+        executed_count = 0
+        
+        python_blocks = re.findall(r'\[PYTHON\](.*?)\[/PYTHON\]', cleaned_response, re.DOTALL | re.IGNORECASE) if has_python else []
+        total_count = len(instructions) + len(python_blocks)
+        
+        # ===== 执行 JSON 指令 =====
+        for i, obj in enumerate(instructions, 1):
+            if 'error' in obj:
+                has_error = True
+                error_msg = obj['error']
+                failed_action = "JSON解析"
+                failed_input = obj.get('input', '')
+                results.append(f" [{i}/{total_count}] 指令解析失败: {error_msg}")
+                break
             
-            # 计算总块数：JSON 块 + PYTHON 块
-            python_blocks = re.findall(r'\[PYTHON\](.*?)\[/PYTHON\]', cleaned_response, re.DOTALL | re.IGNORECASE) if has_python else []
-            total_count = len(instructions) + len(python_blocks)
-            
-            # ===== 执行 JSON 指令 =====
-            for i, obj in enumerate(instructions, 1):
-                if 'error' in obj:
-                    has_error = True
-                    error_msg = obj['error']
-                    failed_action = "JSON解析"
-                    failed_input = obj.get('input', '')
-                    results.append(f" [{i}/{total_count}] 指令解析失败: {error_msg}")
-                    break
+            action = obj.get('action', '').upper()
+            payload = obj.get('payload', {})
+            try:
+                result = self._execute_instruction(action, payload, obj)
                 
-                action = obj.get('action', '').upper()
-                payload = obj.get('payload', {})
-                try:
-                    result = self._execute_instruction(action, payload, obj)
-                    results.append(f" [{i}/{total_count}] {action}: {result}")
-                    executed_count += 1
-                except Exception as e:
+                # ===== 检查返回值是否包含错误 =====
+                error_keywords = ["失败", "错误", "无法", "缺少", "未找到", "不存在", "超时", "无效", "禁止"]
+                if isinstance(result, str) and any(kw in result for kw in error_keywords):
                     has_error = True
-                    error_msg = str(e)
+                    error_msg = result
                     failed_action = action
                     failed_input = json.dumps(obj, ensure_ascii=False)
-                    results.append(f" [{i}/{total_count}] {action} 执行失败: {error_msg}")
+                    results.append(f" [{i}/{total_count}] {action}: {result}")
                     break
-            
-            # ===== 执行 PYTHON 代码 =====
-            if not has_error and has_python:
-                pattern = r'\[PYTHON\](.*?)\[/PYTHON\]'
-                matches = list(re.finditer(pattern, cleaned_response, re.DOTALL | re.IGNORECASE))
                 
-                # 主屏显示占位符（和原 _process_inline_python 一致）
-                if matches:
-                    display_parts = []
-                    last_end = 0
-                    for match in matches:
-                        before = cleaned_response[last_end:match.start()].strip()
-                        if before:
-                            display_parts.append(before)
-                        display_parts.append("[执行Python代码...]")
-                        last_end = match.end()
-                    after = cleaned_response[last_end:].strip()
-                    if after:
-                        display_parts.append(after)
-                    final_display = "\n\n".join(display_parts)
-                    
-                    # 立即输出到主屏
-                    self.response_callback(final_display + "\n")
-                    self.db.add_message("assistant", final_display)
-                    # 后台生成记忆摘要
-                    if self._collab_enabled and self.ai.is_assistant_available():
-                        threading.Thread(target=self._generate_memory_summary, args=(final_display,), daemon=True).start()
+                results.append(f" [{i}/{total_count}] {action}: {result}")
+                executed_count += 1
                 
-                # 执行所有代码块（副屏输出过程）
-                for i, match in enumerate(matches, 1):
-                    code = match.group(1).strip()
-                    
-                    # 副屏输出：当前执行的代码块
-                    self.process_callback(f"\n[内联代码] 执行第 {i}/{len(matches)} 段:")
-                    self.process_callback(f"```python\n{code}\n```")
-                    
-                    stdout, stderr, success = self.sandbox.execute(code)
-                    
-                    if success:
-                        self.process_callback(f"[内联代码] 第 {i} 段执行成功")
-                        if stdout:
-                            self.process_callback(f"输出:\n{stdout}")
-                        results.append(f" [{i}/{total_count}] PYTHON 执行成功:\n{stdout if stdout else '（无输出）'}")
-                        executed_count += 1
-                    else:
-                        has_error = True
-                        error_msg = stderr
-                        failed_action = "PYTHON"
-                        failed_input = code[:200] + ("..." if len(code) > 200 else "")
-                        self.process_callback(f"[内联代码] 第 {i} 段执行失败")
-                        self.process_callback(f"错误:\n{stderr}")
-                        results.append(f" [{i}/{total_count}] PYTHON 执行失败:\n{stderr}")
-                        break
-            
-            # ===== 构建完整的返回信息 =====
-            summary_lines = [
-                f"执行结果：{'成功' if not has_error else '失败'}",
-                f"执行进度：{executed_count}/{total_count} 个块已完成",
-            ]
-            
-            if has_error:
-                summary_lines.append(f"失败位置：第 {executed_count + 1} 个块")
-                summary_lines.append(f"失败类型：{failed_action}")
-                summary_lines.append(f"失败指令：{failed_input[:200]}")
-                summary_lines.append(f"错误详情：{error_msg}")
-            
-            summary = "\n".join(summary_lines)
-            
-            if has_error:
-                return self._call_ai_and_process(
-                    f"你刚才的指令执行失败，已中断后续执行。\n\n"
-                    f"=== 执行摘要 ===\n{summary}\n\n"
-                    f"=== 执行详情 ===\n" + "\n".join(results) + "\n\n"
-                    f"请根据以下信息修正错误：\n"
-                    f"1. 检查失败指令的格式是否正确\n"
-                    f"2. 检查参数是否完整\n"
-                    f"3. 检查是否有权限或依赖问题\n"
-                    f"4. 修正后重新输出完整的指令块"
-                )
-            else:
-                return self._call_ai_and_process(
-                    f"你刚才的指令全部执行完成。\n\n"
-                    f"=== 执行摘要 ===\n{summary}\n\n"
-                    f"=== 执行详情 ===\n" + "\n".join(results) + "\n\n"
-                    f"请根据结果继续处理。如需执行新的指令，请直接输出。"
-                )
+            except Exception as e:
+                has_error = True
+                error_msg = str(e)
+                failed_action = action
+                failed_input = json.dumps(obj, ensure_ascii=False)
+                results.append(f" [{i}/{total_count}] {action} 执行失败: {error_msg}")
+                break
         
-        # 没有指令，作为普通回复
-        self.db.add_message("assistant", cleaned_response)
-        return cleaned_response
+        # ===== 执行 PYTHON 代码 =====
+        if not has_error and has_python:
+            pattern = r'\[PYTHON\](.*?)\[/PYTHON\]'
+            matches = list(re.finditer(pattern, cleaned_response, re.DOTALL | re.IGNORECASE))
+            
+            if matches:
+                display_parts = []
+                last_end = 0
+                for match in matches:
+                    before = cleaned_response[last_end:match.start()].strip()
+                    if before:
+                        display_parts.append(before)
+                    display_parts.append("[执行Python代码...]")
+                    last_end = match.end()
+                after = cleaned_response[last_end:].strip()
+                if after:
+                    display_parts.append(after)
+                final_display = "\n\n".join(display_parts)
+                self.response_callback(final_display + "\n")
+                self.db.add_message("assistant", final_display)
+                if self._collab_enabled and self.ai.is_assistant_available():
+                    threading.Thread(target=self._generate_memory_summary, args=(final_display,), daemon=True).start()
+            
+            for i, match in enumerate(matches, 1):
+                code = match.group(1).strip()
+                self.process_callback(f"\n[内联代码] 执行第 {i}/{len(matches)} 段:")
+                self.process_callback(f"```python\n{code}\n```")
+                
+                stdout, stderr, success = self.sandbox.execute(code)
+                
+                if success:
+                    self.process_callback(f"[内联代码] 第 {i} 段执行成功")
+                    if stdout:
+                        self.process_callback(f"输出:\n{stdout}")
+                    results.append(f" [{i}/{total_count}] PYTHON 执行成功:\n{stdout if stdout else '（无输出）'}")
+                    executed_count += 1
+                else:
+                    has_error = True
+                    error_msg = stderr
+                    failed_action = "PYTHON"
+                    failed_input = code[:200] + ("..." if len(code) > 200 else "")
+                    self.process_callback(f"[内联代码] 第 {i} 段执行失败")
+                    self.process_callback(f"错误:\n{stderr}")
+                    results.append(f" [{i}/{total_count}] PYTHON 执行失败:\n{stderr}")
+                    break
+        
+        # ===== 构建执行报告 =====
+        summary_lines = [
+            f"执行结果：{'成功' if not has_error else '失败'}",
+            f"执行进度：{executed_count}/{total_count} 个块已完成",
+        ]
+        
+        if has_error:
+            summary_lines.append(f"失败位置：第 {executed_count + 1} 个块")
+            summary_lines.append(f"失败类型：{failed_action}")
+            summary_lines.append(f"失败指令：{failed_input[:200]}")
+            summary_lines.append(f"错误详情：{error_msg}")
+        
+        summary = "\n".join(summary_lines)
+        full_report = f"{summary}\n\n执行详情：\n" + "\n".join(results)
+        
+        # ===== 检查是否需要继续 =====
+        if has_error:
+            return self._call_ai_and_process(
+                f"你刚才的指令执行失败。\n\n"
+                f"=== 执行报告 ===\n{full_report}\n\n"
+                f"请修正错误后重新输出完整指令。"
+            )
+        elif '[CONTINUE]' in cleaned_response.upper():
+            return self._call_ai_and_process(
+                f"你刚才的指令执行完成，并检测到 [CONTINUE] 标志。\n\n"
+                f"=== 执行报告 ===\n{full_report}\n\n"
+                f"请根据结果继续处理。"
+            )
+        else:
+            self.db.add_message("assistant", full_report)
+            return full_report
 
     def _process_json_block(self, text: str):
         """
@@ -1370,7 +1373,7 @@ weight 取值 1-10，按重要性评分：
             if task:
                 msg = f"任务已创建: {task.id} - {task.name}"
                 self.process_callback(f"[任务] {msg}")
-                return self._continue_original_task(msg)
+                return msg
             return "任务创建失败"
         elif action == "UPDATE_TASK":  
             return self._execute_update_task(payload)
@@ -1384,7 +1387,7 @@ weight 取值 1-10，按重要性评分：
             
             result = self.ext_manager.execute_manage(payload)
             self.db.add_message("assistant", f"[扩展] {result[:200]}")
-            return self._continue_original_task(f"已执行 EXTENSION，结果：{result}")
+            return f"已执行 EXTENSION，结果：{result}"
         elif action == "LOAD_MODULE":
             return self._execute_load_module(payload)
         
@@ -1396,22 +1399,9 @@ weight 取值 1-10，按重要性评分：
         else:
             original = json.dumps(instruction_block, ensure_ascii=False, indent=2) if instruction_block else "无"
             self.process_callback(f" 未知指令: {action}\n")
-            return self._call_ai_and_process(
-                f"你返回的指令 '{action}' 脚本不认识。\n"
-                f"你刚才返回的指令是：\n{original}\n\n"
-                f"请严格按提示词要求规范使用指令块。"
-            )
-
-    def _continue_original_task(self, prompt: str) -> str:
-        """执行完一个操作后，继续执行原始任务"""
-        original_task = getattr(self, '_current_user_instruction', '')
-        if original_task:
-            return self._call_ai_and_process(
-                f"{prompt}\n\n"
-                f"原始任务：{original_task}\n"
-                f"请根据刚才的结果，继续执行下一步。"
-            )
-        return prompt
+            return f"""你返回的指令 '{action}' 脚本不认识。
+你刚才返回的指令是：{original}
+请严格按提示词要求规范使用指令块。"""
 
     def _execute_knowledge(self, payload: Dict) -> str:
         """执行知识库操作"""
@@ -1427,7 +1417,7 @@ weight 取值 1-10，按重要性评分：
         })
         
         self.act_log.append(f"[{datetime.now().strftime('%H:%M:%S')}]AI进行了知识库操作{action}")
-        return self._continue_original_task(f"已执行 {operation}，结果：{result}")
+        return f"已执行 {operation}，结果：{result}"
 
     def _execute_variable(self, payload: Dict) -> str:
         """执行提示词变量操作"""
@@ -1441,7 +1431,7 @@ weight 取值 1-10，按重要性评分：
             'action': action,
             'payload': payload
         })
-        return self._continue_original_task(f"已执行 {operation}，结果：{result}，请不要再次进行操作，以免陷入循环被系统中断")
+        return f"已执行 {operation}，结果：{result}，请不要再次进行操作，以免陷入循环被系统中断"
     
     def _execute_load_module(self, payload: Dict) -> str:
         modules = payload.get("modules", [])
@@ -1455,7 +1445,7 @@ weight 取值 1-10，按重要性评分：
         self.process_callback(f"[系统] 循环计数器已重置为 0")
         self.act_log.append(f"[{datetime.now().strftime('%H:%M:%S')}]AI加载了模块{modules}")
         if result.get('success'):
-            return self._continue_original_task(msg)
+            return msg
 
     def _execute_update_task(self, payload: Dict) -> str:
         task_id = payload.get("task_id")
@@ -1486,7 +1476,7 @@ weight 取值 1-10，按重要性评分：
             msg = f"任务 {task_id} 更新失败（可能已被归档或不存在）"
             self.act_log.append(f"[{datetime.now().strftime('%H:%M:%S')}]任务{task_id}: 更新失败")
         
-        return self._continue_original_task(msg)
+        return msg
     
     def _execute_search(self, payload: Dict) -> str:
         """执行SEARCH指令"""
@@ -1505,8 +1495,8 @@ weight 取值 1-10，按重要性评分：
                 search_history += f"\n=== 搜索 {i}: {s['query']} (找到 {s['count']} 条) ===\n"
                 search_history += s['results'] + "\n"
             
-            prompt = f"搜索次数已达上限（3次）。\n请根据历史搜索结果直接回答用户问题（{user_instruction}）。\n历史搜索结果：\n\n{search_history}。\n"
-            return self._call_ai_and_process(prompt)
+            prompt = f"搜索次数已达上限（3次）。\n请根据历史搜索结果直接回答用户问题（{user_instruction}）。\n历史搜索结果：\n\n{search_history}。\n[CONTINUE]"
+            return prompt
         
         results = self._search_memory(query)
         formatted = self._format_search_results(results)
@@ -1531,10 +1521,10 @@ weight 取值 1-10，按重要性评分：
 {formatted}
 
 请根据这些搜索结果，继续完成你的原始任务。如果搜索结果不足以完成任务，请说明并采取其他行动。
-注意：连续搜索会限制次数，防止陷入沉思。"""
+注意：连续搜索会限制次数，防止陷入沉思。[CONTINUE]"""
         
         self.act_log.append(f"[{datetime.now().strftime('%H:%M:%S')}]AI进行了第{self._search_in_this_turn}次与 【{query}】有关的回忆")
-        return self._call_ai_and_process(prompt)
+        return prompt
     
     def _call_ai_and_process(self, prompt: str) -> str:
 
