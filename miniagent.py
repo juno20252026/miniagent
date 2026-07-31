@@ -1213,7 +1213,10 @@ weight 取值 1-10，按重要性评分：
                 failed_input = json.dumps(obj, ensure_ascii=False)
                 results.append(f" [{i}/{total_count}] {action} 执行失败: {error_msg}")
                 break
-        
+            
+        if instructions and not has_error and not has_python:
+            cleaned_response = cleaned_response + "\n[CONTINUE]"
+            
         # ===== 执行 PYTHON 代码 =====
         if not has_error and has_python:
             pattern = r'\[PYTHON\](.*?)\[/PYTHON\]'
@@ -1274,15 +1277,17 @@ weight 取值 1-10，按重要性评分：
         
         summary = "\n".join(summary_lines)
         full_report = f"{summary}\n\n执行详情：\n" + "\n".join(results)
-        
+
         # ===== 检查是否需要继续 =====
         if has_error:
+            self.process_callback(f"[JSON执行结果]\n{full_report}") 
             return self._call_ai_and_process(
                 f"你刚才的指令执行失败。\n\n"
                 f"=== 执行报告 ===\n{full_report}\n\n"
                 f"请修正错误后重新输出完整指令。"
             )
         elif '[CONTINUE]' in cleaned_response.upper():
+            self.process_callback(f"[链式调用中间结果]\n{full_report}") 
             return self._call_ai_and_process(
                 f"你刚才的指令执行完成，并检测到 [CONTINUE] 标志。\n\n"
                 f"=== 执行报告 ===\n{full_report}\n\n"
@@ -1521,7 +1526,7 @@ weight 取值 1-10，按重要性评分：
 {formatted}
 
 请根据这些搜索结果，继续完成你的原始任务。如果搜索结果不足以完成任务，请说明并采取其他行动。
-注意：连续搜索会限制次数，防止陷入沉思。[CONTINUE]"""
+注意：连续搜索会限制次数，防止陷入沉思。"""
         
         self.act_log.append(f"[{datetime.now().strftime('%H:%M:%S')}]AI进行了第{self._search_in_this_turn}次与 【{query}】有关的回忆")
         return prompt
