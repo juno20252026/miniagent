@@ -1180,17 +1180,18 @@ class ExtensionManager:
     
     def update_extension_code(self, extension_id: int, new_code: str, 
                                changelog: str = "") -> bool:
-        """更新扩展代码（升级）"""
         ext = self.db.get_extension(extension_id)
         if not ext:
             return False
         
-        old_path = self._extensions_dir / ext['script_path']
-        if old_path.exists():
+        # 修复：统一使用 _extensions_dir / {name}.py
+        script_path = self._extensions_dir / f"{ext['name']}.py"
+        
+        # 备份旧文件
+        if script_path.exists():
             backup_name = f"{ext['name']}_v{ext['version']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.py"
             backup_path = self._versions_dir / backup_name
-            shutil.copy2(old_path, backup_path)
-            
+            shutil.copy2(script_path, backup_path)
             self.db.add_version_history(
                 extension_id,
                 ext['version'],
@@ -1198,13 +1199,15 @@ class ExtensionManager:
                 f"升级前备份: {changelog}"
             )
         
+        # 写入新代码
         try:
-            with open(old_path, 'w', encoding='utf-8') as f:
+            with open(script_path, 'w', encoding='utf-8') as f:
                 f.write(new_code)
         except Exception as e:
             self.log(f"写入新代码失败: {e}", "ERROR")
             return False
         
+        # 版本号递增
         old_version = ext['version']
         version_parts = old_version.split('.')
         if len(version_parts) == 3:
@@ -1215,6 +1218,7 @@ class ExtensionManager:
         
         self.db.update_extension(extension_id, version=new_version)
         
+        # 清除缓存
         cache_key = f"{extension_id}_{ext['version']}"
         if cache_key in self._loaded_extensions:
             del self._loaded_extensions[cache_key]
