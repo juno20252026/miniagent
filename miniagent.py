@@ -1262,6 +1262,7 @@ weight 取值 1-10，按重要性评分：
                     self.process_callback(f"错误:\n{stderr}")
                     results.append(f" [{i}/{total_count}] PYTHON 执行失败:\n{stderr}")
                     break
+            cleaned_response = cleaned_response + "\n[CONTINUE]"
         
         # ===== 构建执行报告 =====
         summary_lines = [
@@ -1276,7 +1277,7 @@ weight 取值 1-10，按重要性评分：
             summary_lines.append(f"错误详情：{error_msg}")
         
         summary = "\n".join(summary_lines)
-        full_report = f"{summary}\n\n执行详情：\n" + "\n".join(results)
+        full_report = f"{summary}\n\n执行详情：\n" + "\n".join(results)  
 
         # ===== 检查是否需要继续 =====
         if has_error:
