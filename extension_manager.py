@@ -1155,7 +1155,7 @@ class ExtensionManager:
             return False
         
         try:
-            script_path = Path(ext['script_path'])
+            script_path = self._extensions_dir / ext['script_path']
             if script_path.exists():
                 backup_path = self._versions_dir / f"{ext['name']}_deleted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.py"
                 shutil.copy2(script_path, backup_path)
@@ -1260,7 +1260,7 @@ class ExtensionManager:
             return {'error': '扩展不存在'}
         
         versions = self.db.get_version_history(extension_id)
-        script_exists = Path(ext['script_path']).exists()
+        script_exists = (self._extensions_dir / ext['script_path']).exists()
         
         return {
             'id': ext['id'],
